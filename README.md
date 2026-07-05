@@ -110,7 +110,3 @@ If the safety mechanism blocks your automated routine because the system was lef
 
 * **Sudo Permissions Drop-In:** `/etc/sudoers.d/99-custom-nopasswd`
 * **Log & Cache Profiles:** `~/.cache/arch_updater_*` & `~/.config/arch-updater/`
-
-```
-
-```
