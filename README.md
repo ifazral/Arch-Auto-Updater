@@ -40,7 +40,7 @@ sudo pacman -S topgrade yad libnotify pacman-contrib networkmanager
 ### 1. Clone the repository
 
 ```bash
-git clone [https://github.com/ifazral/Arch-Auto-Updater.git](https://github.com/ifazral/Arch-Auto-Updater.git)
+git clone https://github.com/ifazral/Arch-Auto-Updater.git
 cd Arch-Auto-Updater
 
 ```
