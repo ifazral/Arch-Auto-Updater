@@ -27,7 +27,8 @@ Unlike generic scripts that run entire user tasks as root or grant global passwo
 Ensure the following dependencies are installed on your Arch Linux machine prior to setup:
 
 ```bash
-sudo pacman -S topgrade yad libnotify pacman-contrib networkmanager
+sudo pacman -S yad libnotify pacman-contrib networkmanager
+yay -S topgrade needrestart
 
 ```
 
