@@ -8,7 +8,7 @@ An automated, user-space system update scheduler tailored for Arch Linux. This p
 * **Persistent Timers:** Missed schedules (e.g., if the computer was turned off) trigger instantly upon boot.
 * **Network & Metered Awareness:** Automatically checks internet connectivity and prompts the user before upgrading over data-metered/limited connections.
 * **Smart Safety Blocks:** Prevents catastrophic updates by enforcing system rules when the machine hasn't been upgraded for an extended period (e.g., >3 months).
-* **Official News Parser:** Fetches and reviews the latest official Arch Linux RSS feed; pauses upgrades if manual intervention guidelines are active.
+* **Official News Parser:** Fetches and reviews the latest official Arch Linux RSS feed; pauses upgrades if manual intervention guidelines are active. (If you read news by clicking button, script will work after 2 hours.)
 * **Advanced Reboot Detection:** Scans post-upgrade system state and logs to determine if core updates (Kernel, Firmware, Systemd, Wayland/X11 components) require a system reboot.
 
 ---
