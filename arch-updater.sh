@@ -104,7 +104,8 @@ update_config() {
 # ==========================================
 TODAY=$(date +%Y-%m-%d)
 
-if [ "$1" != "--retry" ]; then
+# Eğer --retry veya --criticalupdate argümanı yoksa günde 1 kez kontrol et
+if [[ "$1" != "--retry" && "$1" != "--criticalupdate" ]]; then
     LAST_CHECK_DATE=$(cat "$LAST_CHECK_LOG")
     if [ "$LAST_CHECK_DATE" = "$TODAY" ]; then
         exit 0
@@ -173,9 +174,9 @@ if [ "$TOTAL_UPDATES" -eq 0 ]; then
 fi
 
 # ==========================================
-# 6. UPDATE DELAY CONTROL (Time-Based Warnings)
+# 6. UPDATE DELAY CONTROL (Time-Based Warnings & Target Day)
 # ==========================================
-# Extract the timestamp from the latest pacman -Syu log (e.g. format: [2023-10-25T14:32:01+0300])
+# Extract the timestamp from the latest pacman -Syu log
 LAST_UPG_STR=$(grep -E "starting full system upgrade" /var/log/pacman.log 2>/dev/null | tail -n 1 | awk -F'[\\[\\]]' '{print $2}')
 
 if [ -n "$LAST_UPG_STR" ]; then
@@ -190,45 +191,55 @@ DIFF_DAYS=$((DIFF_SEC / 86400))
 ZAMAN_STR="${DIFF_DAYS} gün"
 ZAMAN_STR_EN="${DIFF_DAYS} days"
 
+# --- HAFTANIN BELİRLİ GÜNÜ ÇALIŞTIRMA KORUMASI ---
+CURRENT_DOW=$(date +%u)
+# Analyzer scriptinden gelen ayar yoksa varsayılan olarak Pazartesi(1) kabul et
+TARGET_DOW=${TARGET_DOW:-1}
+
+# Eğer retry VEYA criticalupdate bayrakları verilmemişse hedef günü kontrol et
+if [[ "$1" != "--retry" && "$1" != "--criticalupdate" ]] && [ "$CURRENT_DOW" -ne "$TARGET_DOW" ]; then
+    exit 0
+fi
+
 BLOCK_AUTO=0
 WARN_MSG=""
 WARN_MSG_EN=""
 
 if [ "$DIFF_DAYS" -ge 1825 ]; then # 5 Years
     WARN_MSG="Sistem 5 yıldan fazla olan $ZAMAN_STR süredir güncelleme yapmadı. Sorun yaşanma olasılığı çok yüksek, otomatik güncelleme engellendi. Güncelleme yapmanız önerilmez, önemli dosyaların yedeğini alıp temiz bir Arch Linux kurulumu yapmanız veya rolling release olmayan bir linux dağıtımı kullanmanız önerilir. Güncellemeyi manuel olarak (sudo pacman -Sy archlinux-keyring ve sudo pacman -Syu) başarıyla tamamlarsanız \"arch-updater continue\" yazarak servisin çalışmasına izin verebilirsiniz."
-    WARN_MSG_EN="The system has not been updated for over 5 years ($ZAMAN_STR_EN). The probability of encountering issues is very high, automatic updates are blocked. Updating is not recommended; it is advised to back up important files and perform a clean Arch Linux installation, or use a non-rolling release Linux distribution. If you successfully complete the update manually (sudo pacman -Sy archlinux-keyring and sudo pacman -Syu), you can allow the service to run by typing \"arch-updater continue\"."
+    WARN_MSG_EN="The system has not been updated for over 5 years ($ZAMAN_STR_EN). The probability of encountering issues is very high, automatic updates are blocked. Updating is not recommended; it is advised to back up important files and perform a clean Arch Linux installation. If you successfully complete the update manually, you can allow the service to run by typing \"arch-updater continue\"."
     BLOCK_AUTO=1
 elif [ "$DIFF_DAYS" -ge 1095 ]; then # 3 Years
-    WARN_MSG="Sistem 3 yıldan fazla olan $ZAMAN_STR süredir güncelleme yapmadı. Sorun yaşanma olasılığı çok yüksek, otomatik güncelleme engellendi. Güncelleme yapmanız önerilmez, önemli dosyaların yedeğini alıp temiz bir Arch Linux kurulumu yapmanız veya rolling release olmayan bir linux dağıtımı kullanmanız önerilir. Güncellemeyi manuel olarak (sudo pacman -Sy archlinux-keyring ve sudo pacman -Syu) başarıyla tamamlarsanız \"arch-updater continue\" yazarak servisin çalışmasına izin verebilirsiniz."
-    WARN_MSG_EN="The system has not been updated for over 3 years ($ZAMAN_STR_EN). The probability of encountering issues is very high, automatic updates are blocked. Updating is not recommended; it is advised to back up important files and perform a clean Arch Linux installation, or use a non-rolling release distribution. If you successfully complete the update manually (sudo pacman -Sy archlinux-keyring and sudo pacman -Syu), you can allow the service to run by typing \"arch-updater continue\"."
+    WARN_MSG="Sistem 3 yıldan fazla olan $ZAMAN_STR süredir güncelleme yapmadı. Sorun yaşanma olasılığı çok yüksek, otomatik güncelleme engellendi. Güncelleme yapmanız önerilmez, önemli dosyaların yedeğini alıp temiz bir Arch Linux kurulumu yapmanız önerilir. Güncellemeyi manuel olarak başarıyla tamamlarsanız \"arch-updater continue\" yazarak servisin çalışmasına izin verebilirsiniz."
+    WARN_MSG_EN="The system has not been updated for over 3 years ($ZAMAN_STR_EN). The probability of encountering issues is very high, automatic updates are blocked. Updating is not recommended. If you successfully complete the update manually, you can allow the service to run by typing \"arch-updater continue\"."
     BLOCK_AUTO=1
 elif [ "$DIFF_DAYS" -ge 912 ]; then # 2.5 Years
-    WARN_MSG="Sistem 2.5 yıldan fazla olan $ZAMAN_STR süredir güncelleme yapmadı. Sorun yaşanma olasılığı çok yüksek, otomatik güncelleme engellendi. Güncelleme yapmanız önerilmez, önemli dosyaların yedeğini alıp temiz bir Arch Linux kurulumu yapmanız veya rolling release olmayan bir linux dağıtımı kullanmanız önerilir. Güncellemeyi manuel olarak (sudo pacman -Sy archlinux-keyring ve sudo pacman -Syu) başarıyla tamamlarsanız \"arch-updater continue\" yazarak servisin çalışmasına izin verebilirsiniz."
-    WARN_MSG_EN="The system has not been updated for over 2.5 years ($ZAMAN_STR_EN). The probability of encountering issues is very high, automatic updates are blocked. Updating is not recommended; it is advised to back up important files and perform a clean Arch Linux installation, or use a non-rolling release distribution. If you successfully complete the update manually (sudo pacman -Sy archlinux-keyring and sudo pacman -Syu), you can allow the service to run by typing \"arch-updater continue\"."
+    WARN_MSG="Sistem 2.5 yıldan fazla olan $ZAMAN_STR süredir güncelleme yapmadı. Sorun yaşanma olasılığı çok yüksek, otomatik güncelleme engellendi. Güncellemeyi manuel olarak başarıyla tamamlarsanız \"arch-updater continue\" yazarak servisin çalışmasına izin verebilirsiniz."
+    WARN_MSG_EN="The system has not been updated for over 2.5 years ($ZAMAN_STR_EN). Automatic updates are blocked. If you successfully complete the update manually, you can allow the service to run by typing \"arch-updater continue\"."
     BLOCK_AUTO=1
 elif [ "$DIFF_DAYS" -ge 730 ]; then # 2 Years
-    WARN_MSG="Sistem 2 yıldan fazla olan $ZAMAN_STR süredir güncelleme yapmadı. Sorun yaşanma olasılığı çok yüksek, otomatik güncelleme engellendi. Güncelleme yapmanız önerilmez, önemli dosyaların yedeğini alıp temiz bir Arch Linux kurulumu yapmanız veya rolling release olmayan bir linux dağıtımı kullanmanız önerilir. Güncellemeyi manuel olarak (sudo pacman -Sy archlinux-keyring ve sudo pacman -Syu) başarıyla tamamlarsanız \"arch-updater continue\" yazarak servisin çalışmasına izin verebilirsiniz."
-    WARN_MSG_EN="The system has not been updated for over 2 years ($ZAMAN_STR_EN). The probability of encountering issues is very high, automatic updates are blocked. Updating is not recommended; it is advised to back up important files and perform a clean Arch Linux installation, or use a non-rolling release distribution. If you successfully complete the update manually (sudo pacman -Sy archlinux-keyring and sudo pacman -Syu), you can allow the service to run by typing \"arch-updater continue\"."
+    WARN_MSG="Sistem 2 yıldan fazla olan $ZAMAN_STR süredir güncelleme yapmadı. Sorun yaşanma olasılığı çok yüksek, otomatik güncelleme engellendi. Güncellemeyi manuel olarak başarıyla tamamlarsanız \"arch-updater continue\" yazarak servisin çalışmasına izin verebilirsiniz."
+    WARN_MSG_EN="The system has not been updated for over 2 years ($ZAMAN_STR_EN). Automatic updates are blocked. If you successfully complete the update manually, you can allow the service to run by typing \"arch-updater continue\"."
     BLOCK_AUTO=1
 elif [ "$DIFF_DAYS" -ge 547 ]; then # 1.5 Years
-    WARN_MSG="Sistem 1.5 yıldan fazla olan $ZAMAN_STR süredir güncelleme yapmadı. Sorun yaşanma olasılığı çok yüksek, otomatik güncelleme engellendi. Güncelleme yapmanız önerilmez, önemli dosyaların yedeğini alıp temiz bir Arch Linux kurulumu yapmanız veya rolling release olmayan bir linux dağıtımı kullanmanız önerilir. Güncellemeyi manuel olarak (sudo pacman -Sy archlinux-keyring ve sudo pacman -Syu) başarıyla tamamlarsanız \"arch-updater continue\" yazarak servisin çalışmasına izin verebilirsiniz."
-    WARN_MSG_EN="The system has not been updated for over 1.5 years ($ZAMAN_STR_EN). The probability of encountering issues is very high, automatic updates are blocked. Updating is not recommended; it is advised to back up important files and perform a clean Arch Linux installation, or use a non-rolling release distribution. If you successfully complete the update manually (sudo pacman -Sy archlinux-keyring and sudo pacman -Syu), you can allow the service to run by typing \"arch-updater continue\"."
+    WARN_MSG="Sistem 1.5 yıldan fazla olan $ZAMAN_STR süredir güncelleme yapmadı. Sorun yaşanma olasılığı çok yüksek, otomatik güncelleme engellendi. Güncellemeyi manuel olarak başarıyla tamamlarsanız \"arch-updater continue\" yazarak servisin çalışmasına izin verebilirsiniz."
+    WARN_MSG_EN="The system has not been updated for over 1.5 years ($ZAMAN_STR_EN). Automatic updates are blocked. If you successfully complete the update manually, you can allow the service to run by typing \"arch-updater continue\"."
     BLOCK_AUTO=1
 elif [ "$DIFF_DAYS" -ge 365 ]; then # 1 Year
-    WARN_MSG="Sistem 1 yıldan fazla olan $ZAMAN_STR süredir güncelleme yapmadı. Sorun yaşanma olasılığı çok yüksek, otomatik güncelleme engellendi. Güncellemeyi manuel olarak (sudo pacman -Sy archlinux-keyring ve sudo pacman -Syu) başarıyla tamamlarsanız \"arch-updater continue\" yazarak servisin çalışmasına izin verebilirsiniz."
-    WARN_MSG_EN="The system has not been updated for over 1 year ($ZAMAN_STR_EN). The probability of encountering issues is very high, automatic updates are blocked. If you successfully complete the update manually (sudo pacman -Sy archlinux-keyring and sudo pacman -Syu), you can allow the service to run by typing \"arch-updater continue\"."
+    WARN_MSG="Sistem 1 yıldan fazla olan $ZAMAN_STR süredir güncelleme yapmadı. Sorun yaşanma olasılığı çok yüksek, otomatik güncelleme engellendi. Güncellemeyi manuel olarak başarıyla tamamlarsanız \"arch-updater continue\" yazarak servisin çalışmasına izin verebilirsiniz."
+    WARN_MSG_EN="The system has not been updated for over 1 year ($ZAMAN_STR_EN). Automatic updates are blocked. If you successfully complete the update manually, you can allow the service to run by typing \"arch-updater continue\"."
     BLOCK_AUTO=1
 elif [ "$DIFF_DAYS" -ge 270 ]; then # 9 Months
-    WARN_MSG="Sistem 9 aydan fazla olan $ZAMAN_STR süredir güncelleme yapmadı. Sorun yaşanma olasılığı çok yüksek, otomatik güncelleme engellendi. Güncellemeyi manuel olarak (sudo pacman -Sy archlinux-keyring ve sudo pacman -Syu) başarıyla tamamlarsanız \"arch-updater continue\" yazarak servisin çalışmasına izin verebilirsiniz."
-    WARN_MSG_EN="The system has not been updated for over 9 months ($ZAMAN_STR_EN). The probability of encountering issues is very high, automatic updates are blocked. If you successfully complete the update manually (sudo pacman -Sy archlinux-keyring and sudo pacman -Syu), you can allow the service to run by typing \"arch-updater continue\"."
+    WARN_MSG="Sistem 9 aydan fazla olan $ZAMAN_STR süredir güncelleme yapmadı. Sorun yaşanma olasılığı çok yüksek, otomatik güncelleme engellendi. Güncellemeyi manuel olarak başarıyla tamamlarsanız \"arch-updater continue\" yazarak servisin çalışmasına izin verebilirsiniz."
+    WARN_MSG_EN="The system has not been updated for over 9 months ($ZAMAN_STR_EN). Automatic updates are blocked. If you successfully complete the update manually, you can allow the service to run by typing \"arch-updater continue\"."
     BLOCK_AUTO=1
 elif [ "$DIFF_DAYS" -ge 180 ]; then # 6 Months
-    WARN_MSG="Sistem 6 aydan fazla olan $ZAMAN_STR süredir güncelleme yapmadı. Sorun yaşanma olasılığı yüksek, otomatik güncelleme engellendi. Güncellemeyi manuel olarak (sudo pacman -Sy archlinux-keyring ve sudo pacman -Syu) başarıyla tamamlarsanız \"arch-updater continue\" yazarak servisin çalışmasına izin verebilirsiniz."
-    WARN_MSG_EN="The system has not been updated for over 6 months ($ZAMAN_STR_EN). The probability of encountering issues is high, automatic updates are blocked. If you successfully complete the update manually (sudo pacman -Sy archlinux-keyring and sudo pacman -Syu), you can allow the service to run by typing \"arch-updater continue\"."
+    WARN_MSG="Sistem 6 aydan fazla olan $ZAMAN_STR süredir güncelleme yapmadı. Sorun yaşanma olasılığı yüksek, otomatik güncelleme engellendi. Güncellemeyi manuel olarak başarıyla tamamlarsanız \"arch-updater continue\" yazarak servisin çalışmasına izin verebilirsiniz."
+    WARN_MSG_EN="The system has not been updated for over 6 months ($ZAMAN_STR_EN). Automatic updates are blocked. If you successfully complete the update manually, you can allow the service to run by typing \"arch-updater continue\"."
     BLOCK_AUTO=1
 elif [ "$DIFF_DAYS" -ge 90 ]; then # 3 Months
-    WARN_MSG="Sistem 3 aydan fazla olan $ZAMAN_STR süredir güncelleme yapmadı. Sorun yaşanma olasılığı yüksek, otomatik güncelleme engellendi. Güncellemeyi manuel olarak (sudo pacman -Sy archlinux-keyring ve sudo pacman -Syu) başarıyla tamamlarsanız \"arch-updater continue\" yazarak servisin çalışmasına izin verebilirsiniz."
-    WARN_MSG_EN="The system has not been updated for over 3 months ($ZAMAN_STR_EN). The probability of encountering issues is high, automatic updates are blocked. If you successfully complete the update manually (sudo pacman -Sy archlinux-keyring and sudo pacman -Syu), you can allow the service to run by typing \"arch-updater continue\"."
+    WARN_MSG="Sistem 3 aydan fazla olan $ZAMAN_STR süredir güncelleme yapmadı. Sorun yaşanma olasılığı yüksek, otomatik güncelleme engellendi. Güncellemeyi manuel olarak başarıyla tamamlarsanız \"arch-updater continue\" yazarak servisin çalışmasına izin verebilirsiniz."
+    WARN_MSG_EN="The system has not been updated for over 3 months ($ZAMAN_STR_EN). Automatic updates are blocked. If you successfully complete the update manually, you can allow the service to run by typing \"arch-updater continue\"."
     BLOCK_AUTO=1
 elif [ "$DIFF_DAYS" -ge 60 ]; then # 2 Months
     WARN_MSG="Sistem 2 aydan fazla olan $ZAMAN_STR süredir güncelleme yapmadı. Sorun yaşanma olasılığı yüksek, güncelleme sonrası loga bakmanız önerilir."
@@ -248,17 +259,14 @@ elif [ "$DIFF_DAYS" -ge 14 ]; then # 2 Weeks
 elif [ "$DIFF_DAYS" -ge 10 ]; then # 1.5 Weeks
     WARN_MSG="Sistem 1.5 haftadan fazla olan $ZAMAN_STR süredir güncelleme yapmadı. Sorun yaşanma olasılığı az, güncelleme sonrası loga bakmanız önerilir."
     WARN_MSG_EN="The system has not been updated for over 1.5 weeks ($ZAMAN_STR_EN). The probability of encountering issues is low; checking the log after updating is recommended."
-elif [ "$DIFF_DAYS" -ge 7 ]; then # 1 Week
-    WARN_MSG="Sistem 1 haftadan fazla olan $ZAMAN_STR süredir güncelleme yapmadı."
-    WARN_MSG_EN="The system has not been updated for over 1 week ($ZAMAN_STR_EN)."
 fi
 
 if [ -n "$WARN_MSG" ]; then
     if [ "$LANG_CHECK" = "TR" ]; then
-        N_TITLE="⚠️ Güncelleme Süresi Uyarısı"
+        N_TITLE="⚠️ Güncelleme Uyarısı"
         N_MSG="$WARN_MSG"
     else
-        N_TITLE="⚠️ Update Time Warning"
+        N_TITLE="⚠️ Update Warning"
         N_MSG="$WARN_MSG_EN"
     fi
 
@@ -272,7 +280,7 @@ if [ -n "$WARN_MSG" ]; then
 fi
 
 # ==========================================
-# 6. UPDATE BLOCKS (NEWS + BTRFS + TOPGRADE)
+# 7. UPDATE BLOCKS (NEWS + TOPGRADE)
 # ==========================================
 JUST_UPDATED=0
 
@@ -314,16 +322,26 @@ if [ "$SKIP_UPDATES" -eq 0 ]; then
     fi
 
     # --- B. SILENT UPDATE ---
-    if [ "$LANG_CHECK" = "TR" ]; then
-        START_TITLE="Sistem Güncelleniyor"
-        START_MSG="Güncelleme başladı, lütfen güncellemenin bittiği hakkındaki bildirim gelene kadar sistemi kapatmayın."
+    if [ "$1" == "--criticalupdate" ]; then
+        if [ "$LANG_CHECK" = "TR" ]; then
+            START_TITLE="🚨 Kritik Sistem Güncellemesi"
+            START_MSG="Kritik güncelleme komutu alındı. Rutin bekleme süresi es geçilerek işlemler arka planda başlatıldı."
+        else
+            START_TITLE="🚨 Critical System Update"
+            START_MSG="Critical update command received. Bypassing wait period, updates have started in the background."
+        fi
     else
-        START_TITLE="System Updating"
-        START_MSG="The update has started; please do not restart until you receive a notification that the update is complete."
+        if [ "$LANG_CHECK" = "TR" ]; then
+            START_TITLE="Sistem Güncelleniyor"
+            START_MSG="Haftalık güvenli güncelleme gününüz geldi! Güncelleme arka planda başladı, lütfen bildirim gelene kadar sistemi kapatmayın."
+        else
+            START_TITLE="System Updating"
+            START_MSG="Your safe weekly update day is here! The update has started in the background; please do not restart until completion."
+        fi
     fi
     notify-send -a "Arch Updater" -u normal "$START_TITLE" "$START_MSG"
 
-    echo -e "\n=== GÜNCELLEME LOGU: $(date) ===" >> /tmp/arch_updater_topgrade.log
+    echo -e "\n=== UPDATE LOG: $(date) ===" > /tmp/arch_updater_topgrade.log
 
     # Run Topgrade command and record its status
     sudo topgrade -y >> /tmp/arch_updater_topgrade.log 2>&1
@@ -367,7 +385,7 @@ if [ "$SKIP_UPDATES" -eq 0 ]; then
 fi
 
 # ==========================================
-# 7. REBOOT CHECK (Advanced)
+# 8. REBOOT CHECK (Advanced)
 # ==========================================
 REBOOT_NEEDED=0
 if [ "$SKIP_UPDATES" -eq 0 ]; then
@@ -389,9 +407,9 @@ if [ "$SKIP_UPDATES" -eq 0 ]; then
         fi
     fi
 
-    # 2. SERVICE UPDATE CHECK (needrestart - SVC Only)
+    # 2. SERVICE UPDATE CHECK (sudo added so it can read system-level daemons)
     if command -v needrestart &> /dev/null; then
-        (needrestart -b 2>/dev/null | grep -iq "NEEDRESTART-SVC-") && REBOOT_NEEDED=1
+        (sudo needrestart -b 2>/dev/null | grep -iq "NEEDRESTART-SVC-") && REBOOT_NEEDED=1
     fi
 
     # 3. KERNEL MODULE CHECK (Deletion of old kernel folder)
@@ -425,10 +443,10 @@ else
     if [ "$JUST_UPDATED" -eq 1 ]; then
         if [ "$LANG_CHECK" = "TR" ]; then
             SUCCESS_TITLE="Güncelleme Başarılı"
-            SUCCESS_MSG="Güncelleme bitti. Yeniden başlatma zorunlu değil."
+            SUCCESS_MSG="Canlı (Live) aynalardan güncellemeler yapıldı. Yeniden başlatma zorunlu değil."
         else
             SUCCESS_TITLE="Update Successful"
-            SUCCESS_MSG="The update is complete. Restart is not required."
+            SUCCESS_MSG="Live updates have been applied. Restart is not required."
         fi
         notify-send -a "Arch Updater" -u normal "$SUCCESS_TITLE" "$SUCCESS_MSG"
     fi
