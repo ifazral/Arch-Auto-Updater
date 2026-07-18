@@ -1,59 +1,77 @@
 #!/bin/bash
 
+# ==========================================
+# 0. GLOBAL LOGLAMA (SESSİZ KAPANMAYI ENGELLER)
+# ==========================================
+mkdir -p "$HOME/.cache"
+MAIN_LOG="$HOME/.cache/arch_updater_main.log"
+# Betiğin tüm standart ve hata çıktılarını log dosyasına yönlendir (aynı zamanda terminale de basar)
+exec > >(tee -a "$MAIN_LOG") 2>&1
+
+echo -e "\n=========================================="
+echo "Arch Updater Başladı: $(date)"
+echo "=========================================="
+
 REQUIRED_PKGS=("topgrade" "yad" "notify-send" "checkupdates")
 for pkg in "${REQUIRED_PKGS[@]}"; do
     if ! command -v "$pkg" &> /dev/null; then
-        echo "Error: $pkg is not installed"
+        echo "[Hata] $pkg yüklü değil. Çıkılıyor."
         exit 1
     fi
 done
 
 # ==========================================
-# 0. MANUAL CONTINUE (CONTINUE ARGUMENT)
+# 0.1 MANUAL CONTINUE (CONTINUE ARGUMENT)
 # ==========================================
-# To lock and unlock systems that have not been updated for more than 3 months
 BLOCK_FILE="$HOME/.cache/arch_updater_blocked"
 if [ "$1" == "continue" ]; then
     rm -f "$BLOCK_FILE"
-    echo "Arch Updater: Otomatik güncelleme kilidi kaldırıldı. (Auto-update lock removed.)"
+    echo "[Bilgi] Arch Updater: Otomatik güncelleme kilidi kaldırıldı."
     notify-send -a "Arch Updater" -u normal "Servis Kilidi Açıldı" "Otomatik güncelleme kilidi başarıyla kaldırıldı."
     exit 0
 fi
 
-# If the system hasn't been updated for 6 months or more and the lock is not released, stop the script
 if [ -f "$BLOCK_FILE" ]; then
+    echo "[Uyarı] Sistem kilitli (BLOCK_FILE mevcut). Çıkılıyor."
     exit 0
 fi
 
 # ==========================================
 # 1. ENVIRONMENT VARIABLES AND DISPLAY CONTROL
 # ==========================================
-export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+XDG_RUNTIME_DIR="/run/user/$(id -u)"
+export XDG_RUNTIME_DIR
 export DISPLAY=:0
 export WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-wayland-0}
 export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"
 
-# --- DISPLAY (GUI) READINESS CHECK ---
-# Prevents startup race conditions. Waits until the desktop environment loads.
+echo "[Bilgi] Display hazırlığı bekleniyor..."
 WAIT_TIME=0
 MAX_WAIT=120
 while [ ! -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" ] && [ ! -e "/tmp/.X11-unix/X${DISPLAY#*:}" ]; do
     sleep 5
     WAIT_TIME=$((WAIT_TIME + 5))
-    if [ "$WAIT_TIME" -ge "$MAX_WAIT" ]; then exit 0; fi
+    if [ "$WAIT_TIME" -ge "$MAX_WAIT" ]; then
+        echo "[Hata] Display 120 saniye içinde hazır olamadı. Çıkılıyor."
+        exit 0
+    fi
 done
+echo "[Bilgi] Display hazır."
 
 # ==========================================
-# 2. SINGLE INSTANCE LOCK (LOCK FILE)
+# 2. SINGLE INSTANCE LOCK
 # ==========================================
 SCRIPT_PATH=$(realpath "$0")
 LOCK_FILE="/tmp/arch_updater.lock"
 
 exec 9> "$LOCK_FILE"
-if ! flock -n 9; then exit 0; fi
+if ! flock -n 9; then
+    echo "[Uyarı] Betik zaten çalışıyor (Lock file mevcut). Çıkılıyor."
+    exit 0
+fi
 
 # ==========================================
-# SETTINGS AND VARIABLES
+# 3. SETTINGS AND VARIABLES
 # ==========================================
 LOG_FILE="$HOME/.cache/arch_updater_last_run"
 LAST_CHECK_LOG="$HOME/.cache/arch_updater_last_check"
@@ -75,9 +93,10 @@ mkdir -p "$CONFIG_DIR"
 [ ! -f "$RETRY_COUNT_FILE" ] && echo 0 > "$RETRY_COUNT_FILE"
 [ ! -f "$CONFIG_FILE" ] && touch "$CONFIG_FILE"
 
-LAST_RUN_EPOCH=$(cat "$LOG_FILE")
 NEWS_ACK_EPOCH=$(cat "$NEWS_ACK_LOG")
 NEWS_RETRIES=$(cat "$RETRY_COUNT_FILE")
+
+# shellcheck disable=SC1090
 [ -f "$CONFIG_FILE" ] && source "$CONFIG_FILE"
 
 BOOT_TIME=$(awk '/btime/ {print $2}' /proc/stat)
@@ -88,7 +107,6 @@ if [ -f "$REBOOT_LOG" ]; then
     if [ "$LOGGED_REBOOT_TIME" -gt "$BOOT_TIME" ]; then PENDING_REBOOT=1; fi
 fi
 
-# Helper function to securely save settings
 update_config() {
     local key="$1"
     local val="$2"
@@ -100,31 +118,36 @@ update_config() {
 }
 
 # ==========================================
-# 3. AT MOST 1 CHECK PER DAY CONDITION (SWITCH-BREAK LOGIC)
+# 4. GÜNDE 1 KEZ ÇALIŞMA KONTROLÜ
 # ==========================================
 TODAY=$(date +%Y-%m-%d)
 
-# Eğer --retry veya --criticalupdate argümanı yoksa günde 1 kez kontrol et
 if [[ "$1" != "--retry" && "$1" != "--criticalupdate" ]]; then
     LAST_CHECK_DATE=$(cat "$LAST_CHECK_LOG")
     if [ "$LAST_CHECK_DATE" = "$TODAY" ]; then
+        echo "[Bilgi] Bugün zaten kontrol edilmiş ($TODAY). Çıkılıyor."
         exit 0
     fi
     echo "$TODAY" > "$LAST_CHECK_LOG"
 fi
 
 # ==========================================
-# 4. INTERNET AND METERED CONNECTION CHECK
+# 5. İNTERNET VE METERED KONTROLÜ
 # ==========================================
-if ! ping -c 1 -W 3 archlinux.org &> /dev/null; then exit 0; fi
+if ! ping -c 1 -W 3 archlinux.org &> /dev/null; then
+    echo "[Hata] İnternet bağlantısı yok veya archlinux.org'a ulaşılamıyor. Çıkılıyor."
+    exit 0
+fi
 
 METERED_STATUS=$(nmcli -t -f GENERAL.METERED dev show 2>/dev/null | grep -iE "^yes|^yes \(guessed\)" | head -n 1)
 if [ -n "$METERED_STATUS" ]; then
     if [ "$IGNORE_METERED" = "1" ]; then
-        : # Continue silently
+        echo "[Bilgi] Sınırlı ağ tespit edildi ancak ayar gereği yoksayılıyor."
     elif [ "$IGNORE_METERED" = "0" ]; then
-        exit 0;
+        echo "[Bilgi] Sınırlı ağ tespit edildi. Ayar gereği çıkılıyor."
+        exit 0
     else
+        echo "[Bilgi] Sınırlı ağ için kullanıcıya soruluyor..."
         if [ "$LANG_CHECK" = "TR" ]; then
             M_TITLE="Sınırlı İnternet Kotası"
             M_MSG="Bağlanılan internet sınırlı kotaya sahip yine de güncellemeye devam edilsin mi?"
@@ -145,18 +168,23 @@ if [ -n "$METERED_STATUS" ]; then
         YAD_EXIT=$?
         CHK_VAL=$(echo "$YAD_OUT" | awk -F'|' '{print $1}')
 
-        if [ $YAD_EXIT -eq 0 ]; then
+        if [ "$YAD_EXIT" -eq 0 ]; then
             [ "$CHK_VAL" = "TRUE" ] && update_config "IGNORE_METERED" "1"
-        elif [ $YAD_EXIT -eq 1 ]; then
+        elif [ "$YAD_EXIT" -eq 1 ]; then
             [ "$CHK_VAL" = "TRUE" ] && update_config "IGNORE_METERED" "0"
+            echo "[Bilgi] Kullanıcı sınırlı ağda güncellemeyi reddetti. Çıkılıyor."
             exit 0
-        else exit 0; fi
+        else
+            echo "[Bilgi] Kullanıcı sınırlı ağ uyarısına yanıt vermedi (timeout/cancel). Çıkılıyor."
+            exit 0
+        fi
     fi
 fi
 
 # ==========================================
-# 5. PRE-UPDATE CHECK AND LOG PREPARATION
+# 6. PRE-UPDATE KONTROLÜ (GÜNCELLEME VAR MI?)
 # ==========================================
+echo "[Bilgi] Güncellemeler kontrol ediliyor..."
 PACMAN_UPDATES=$(checkupdates 2>/dev/null | wc -l)
 AUR_UPDATES=0
 if command -v yay &> /dev/null; then AUR_UPDATES=$(yay -Qua 2>/dev/null | wc -l)
@@ -165,24 +193,30 @@ elif command -v paru &> /dev/null; then AUR_UPDATES=$(paru -Qua 2>/dev/null | wc
 TOTAL_UPDATES=$((PACMAN_UPDATES + AUR_UPDATES))
 SKIP_UPDATES=0
 
-# Saving the number of pacman log lines before the update (for firmware checks)
 PACMAN_LOG="/var/log/pacman.log"
 PACMAN_LOG_BEFORE=$(wc -l < "$PACMAN_LOG" 2>/dev/null || echo 0)
 
+echo "[Bilgi] Bulunan Güncellemeler: Pacman ($PACMAN_UPDATES), AUR ($AUR_UPDATES)"
+
 if [ "$TOTAL_UPDATES" -eq 0 ]; then
-    if [ "$PENDING_REBOOT" -eq 1 ]; then SKIP_UPDATES=1; else exit 0; fi
+    if [ "$PENDING_REBOOT" -eq 1 ]; then
+        echo "[Bilgi] Güncelleme yok ancak bekleyen yeniden başlatma var."
+        SKIP_UPDATES=1
+    else
+        echo "[Bilgi] Bekleyen güncelleme yok. Çıkılıyor."
+        exit 0
+    fi
 fi
 
 # ==========================================
-# 6. UPDATE DELAY CONTROL (Time-Based Warnings & Target Day)
+# 7. UPDATE DELAY CONTROL (Zaman Uyarıları & Hedef Gün)
 # ==========================================
-# Extract the timestamp from the latest pacman -Syu log
 LAST_UPG_STR=$(grep -E "starting full system upgrade" /var/log/pacman.log 2>/dev/null | tail -n 1 | awk -F'[\\[\\]]' '{print $2}')
 
 if [ -n "$LAST_UPG_STR" ]; then
     LAST_PACMAN_EPOCH=$(date -d "$LAST_UPG_STR" +%s 2>/dev/null)
 else
-    LAST_PACMAN_EPOCH=$(date +%s) # If not found, assume it is a new system
+    LAST_PACMAN_EPOCH=$(date +%s)
 fi
 
 CURRENT_EPOCH=$(date +%s)
@@ -193,11 +227,10 @@ ZAMAN_STR_EN="${DIFF_DAYS} days"
 
 # --- HAFTANIN BELİRLİ GÜNÜ ÇALIŞTIRMA KORUMASI ---
 CURRENT_DOW=$(date +%u)
-# Analyzer scriptinden gelen ayar yoksa varsayılan olarak Pazartesi(1) kabul et
 TARGET_DOW=${TARGET_DOW:-1}
 
-# Eğer retry VEYA criticalupdate bayrakları verilmemişse hedef günü kontrol et
 if [[ "$1" != "--retry" && "$1" != "--criticalupdate" ]] && [ "$CURRENT_DOW" -ne "$TARGET_DOW" ]; then
+    echo "[Bilgi] Bugün hedef güncelleme günü değil (Hedef: $TARGET_DOW, Bugün: $CURRENT_DOW). Çıkılıyor."
     exit 0
 fi
 
@@ -205,58 +238,58 @@ BLOCK_AUTO=0
 WARN_MSG=""
 WARN_MSG_EN=""
 
-if [ "$DIFF_DAYS" -ge 1825 ]; then # 5 Years
+if [ "$DIFF_DAYS" -ge 1825 ]; then
     WARN_MSG="Sistem 5 yıldan fazla olan $ZAMAN_STR süredir güncelleme yapmadı. Sorun yaşanma olasılığı çok yüksek, otomatik güncelleme engellendi. Güncelleme yapmanız önerilmez, önemli dosyaların yedeğini alıp temiz bir Arch Linux kurulumu yapmanız veya rolling release olmayan bir linux dağıtımı kullanmanız önerilir. Güncellemeyi manuel olarak (sudo pacman -Sy archlinux-keyring ve sudo pacman -Syu) başarıyla tamamlarsanız \"arch-updater continue\" yazarak servisin çalışmasına izin verebilirsiniz."
     WARN_MSG_EN="The system has not been updated for over 5 years ($ZAMAN_STR_EN). The probability of encountering issues is very high, automatic updates are blocked. Updating is not recommended; it is advised to back up important files and perform a clean Arch Linux installation. If you successfully complete the update manually, you can allow the service to run by typing \"arch-updater continue\"."
     BLOCK_AUTO=1
-elif [ "$DIFF_DAYS" -ge 1095 ]; then # 3 Years
+elif [ "$DIFF_DAYS" -ge 1095 ]; then
     WARN_MSG="Sistem 3 yıldan fazla olan $ZAMAN_STR süredir güncelleme yapmadı. Sorun yaşanma olasılığı çok yüksek, otomatik güncelleme engellendi. Güncelleme yapmanız önerilmez, önemli dosyaların yedeğini alıp temiz bir Arch Linux kurulumu yapmanız önerilir. Güncellemeyi manuel olarak başarıyla tamamlarsanız \"arch-updater continue\" yazarak servisin çalışmasına izin verebilirsiniz."
     WARN_MSG_EN="The system has not been updated for over 3 years ($ZAMAN_STR_EN). The probability of encountering issues is very high, automatic updates are blocked. Updating is not recommended. If you successfully complete the update manually, you can allow the service to run by typing \"arch-updater continue\"."
     BLOCK_AUTO=1
-elif [ "$DIFF_DAYS" -ge 912 ]; then # 2.5 Years
+elif [ "$DIFF_DAYS" -ge 912 ]; then
     WARN_MSG="Sistem 2.5 yıldan fazla olan $ZAMAN_STR süredir güncelleme yapmadı. Sorun yaşanma olasılığı çok yüksek, otomatik güncelleme engellendi. Güncellemeyi manuel olarak başarıyla tamamlarsanız \"arch-updater continue\" yazarak servisin çalışmasına izin verebilirsiniz."
     WARN_MSG_EN="The system has not been updated for over 2.5 years ($ZAMAN_STR_EN). Automatic updates are blocked. If you successfully complete the update manually, you can allow the service to run by typing \"arch-updater continue\"."
     BLOCK_AUTO=1
-elif [ "$DIFF_DAYS" -ge 730 ]; then # 2 Years
+elif [ "$DIFF_DAYS" -ge 730 ]; then
     WARN_MSG="Sistem 2 yıldan fazla olan $ZAMAN_STR süredir güncelleme yapmadı. Sorun yaşanma olasılığı çok yüksek, otomatik güncelleme engellendi. Güncellemeyi manuel olarak başarıyla tamamlarsanız \"arch-updater continue\" yazarak servisin çalışmasına izin verebilirsiniz."
     WARN_MSG_EN="The system has not been updated for over 2 years ($ZAMAN_STR_EN). Automatic updates are blocked. If you successfully complete the update manually, you can allow the service to run by typing \"arch-updater continue\"."
     BLOCK_AUTO=1
-elif [ "$DIFF_DAYS" -ge 547 ]; then # 1.5 Years
+elif [ "$DIFF_DAYS" -ge 547 ]; then
     WARN_MSG="Sistem 1.5 yıldan fazla olan $ZAMAN_STR süredir güncelleme yapmadı. Sorun yaşanma olasılığı çok yüksek, otomatik güncelleme engellendi. Güncellemeyi manuel olarak başarıyla tamamlarsanız \"arch-updater continue\" yazarak servisin çalışmasına izin verebilirsiniz."
     WARN_MSG_EN="The system has not been updated for over 1.5 years ($ZAMAN_STR_EN). Automatic updates are blocked. If you successfully complete the update manually, you can allow the service to run by typing \"arch-updater continue\"."
     BLOCK_AUTO=1
-elif [ "$DIFF_DAYS" -ge 365 ]; then # 1 Year
+elif [ "$DIFF_DAYS" -ge 365 ]; then
     WARN_MSG="Sistem 1 yıldan fazla olan $ZAMAN_STR süredir güncelleme yapmadı. Sorun yaşanma olasılığı çok yüksek, otomatik güncelleme engellendi. Güncellemeyi manuel olarak başarıyla tamamlarsanız \"arch-updater continue\" yazarak servisin çalışmasına izin verebilirsiniz."
     WARN_MSG_EN="The system has not been updated for over 1 year ($ZAMAN_STR_EN). Automatic updates are blocked. If you successfully complete the update manually, you can allow the service to run by typing \"arch-updater continue\"."
     BLOCK_AUTO=1
-elif [ "$DIFF_DAYS" -ge 270 ]; then # 9 Months
+elif [ "$DIFF_DAYS" -ge 270 ]; then
     WARN_MSG="Sistem 9 aydan fazla olan $ZAMAN_STR süredir güncelleme yapmadı. Sorun yaşanma olasılığı çok yüksek, otomatik güncelleme engellendi. Güncellemeyi manuel olarak başarıyla tamamlarsanız \"arch-updater continue\" yazarak servisin çalışmasına izin verebilirsiniz."
     WARN_MSG_EN="The system has not been updated for over 9 months ($ZAMAN_STR_EN). Automatic updates are blocked. If you successfully complete the update manually, you can allow the service to run by typing \"arch-updater continue\"."
     BLOCK_AUTO=1
-elif [ "$DIFF_DAYS" -ge 180 ]; then # 6 Months
+elif [ "$DIFF_DAYS" -ge 180 ]; then
     WARN_MSG="Sistem 6 aydan fazla olan $ZAMAN_STR süredir güncelleme yapmadı. Sorun yaşanma olasılığı yüksek, otomatik güncelleme engellendi. Güncellemeyi manuel olarak başarıyla tamamlarsanız \"arch-updater continue\" yazarak servisin çalışmasına izin verebilirsiniz."
     WARN_MSG_EN="The system has not been updated for over 6 months ($ZAMAN_STR_EN). Automatic updates are blocked. If you successfully complete the update manually, you can allow the service to run by typing \"arch-updater continue\"."
     BLOCK_AUTO=1
-elif [ "$DIFF_DAYS" -ge 90 ]; then # 3 Months
+elif [ "$DIFF_DAYS" -ge 90 ]; then
     WARN_MSG="Sistem 3 aydan fazla olan $ZAMAN_STR süredir güncelleme yapmadı. Sorun yaşanma olasılığı yüksek, otomatik güncelleme engellendi. Güncellemeyi manuel olarak başarıyla tamamlarsanız \"arch-updater continue\" yazarak servisin çalışmasına izin verebilirsiniz."
     WARN_MSG_EN="The system has not been updated for over 3 months ($ZAMAN_STR_EN). Automatic updates are blocked. If you successfully complete the update manually, you can allow the service to run by typing \"arch-updater continue\"."
     BLOCK_AUTO=1
-elif [ "$DIFF_DAYS" -ge 60 ]; then # 2 Months
+elif [ "$DIFF_DAYS" -ge 60 ]; then
     WARN_MSG="Sistem 2 aydan fazla olan $ZAMAN_STR süredir güncelleme yapmadı. Sorun yaşanma olasılığı yüksek, güncelleme sonrası loga bakmanız önerilir."
     WARN_MSG_EN="The system has not been updated for over 2 months ($ZAMAN_STR_EN). The probability of encountering issues is high; checking the log after updating is recommended."
-elif [ "$DIFF_DAYS" -ge 45 ]; then # 1.5 Months
+elif [ "$DIFF_DAYS" -ge 45 ]; then
     WARN_MSG="Sistem 1.5 aydan fazla olan $ZAMAN_STR süredir güncelleme yapmadı. Sorun yaşanma olasılığı orta, güncelleme sonrası loga bakmanız önerilir."
     WARN_MSG_EN="The system has not been updated for over 1.5 months ($ZAMAN_STR_EN). The probability of encountering issues is medium; checking the log after updating is recommended."
-elif [ "$DIFF_DAYS" -ge 30 ]; then # 1 Month
+elif [ "$DIFF_DAYS" -ge 30 ]; then
     WARN_MSG="Sistem 1 aydan fazla olan $ZAMAN_STR süredir güncelleme yapmadı. Sorun yaşanma olasılığı orta, güncelleme sonrası loga bakmanız önerilir."
     WARN_MSG_EN="The system has not been updated for over 1 month ($ZAMAN_STR_EN). The probability of encountering issues is medium; checking the log after updating is recommended."
-elif [ "$DIFF_DAYS" -ge 21 ]; then # 3 Weeks
+elif [ "$DIFF_DAYS" -ge 21 ]; then
     WARN_MSG="Sistem 3 haftadan fazla olan $ZAMAN_STR süredir güncelleme yapmadı. Sorun yaşanma olasılığı az, güncelleme sonrası loga bakmanız önerilir."
     WARN_MSG_EN="The system has not been updated for over 3 weeks ($ZAMAN_STR_EN). The probability of encountering issues is low; checking the log after updating is recommended."
-elif [ "$DIFF_DAYS" -ge 14 ]; then # 2 Weeks
+elif [ "$DIFF_DAYS" -ge 14 ]; then
     WARN_MSG="Sistem 2 haftadan fazla olan $ZAMAN_STR süredir güncelleme yapmadı. Sorun yaşanma olasılığı az, güncelleme sonrası loga bakmanız önerilir."
     WARN_MSG_EN="The system has not been updated for over 2 weeks ($ZAMAN_STR_EN). The probability of encountering issues is low; checking the log after updating is recommended."
-elif [ "$DIFF_DAYS" -ge 10 ]; then # 1.5 Weeks
+elif [ "$DIFF_DAYS" -ge 10 ]; then
     WARN_MSG="Sistem 1.5 haftadan fazla olan $ZAMAN_STR süredir güncelleme yapmadı. Sorun yaşanma olasılığı az, güncelleme sonrası loga bakmanız önerilir."
     WARN_MSG_EN="The system has not been updated for over 1.5 weeks ($ZAMAN_STR_EN). The probability of encountering issues is low; checking the log after updating is recommended."
 fi
@@ -271,28 +304,31 @@ if [ -n "$WARN_MSG" ]; then
     fi
 
     if [ "$BLOCK_AUTO" -eq 1 ]; then
+        echo "[Hata] $DIFF_DAYS gündür güncelleme yapılmadı. Otomatik güncelleme engellendi."
         notify-send -a "Arch Updater" -u critical -t 0 "$N_TITLE" "$N_MSG"
         touch "$BLOCK_FILE"
-        exit 1 # Lock activated, update will not start
+        exit 1
     else
+        echo "[Uyarı] $DIFF_DAYS gündür güncelleme yapılmadı. Uyarı bildirimi gönderildi."
         notify-send -a "Arch Updater" -u normal "$N_TITLE" "$N_MSG"
     fi
 fi
 
 # ==========================================
-# 7. UPDATE BLOCKS (NEWS + TOPGRADE)
+# 8. UPDATE BLOCKS (NEWS + TOPGRADE)
 # ==========================================
 JUST_UPDATED=0
 
 if [ "$SKIP_UPDATES" -eq 0 ]; then
 
     # --- A. NEWS CHECK ---
-    # More stable Regex parsing (-m 2) against corrupted XML structure
+    echo "[Bilgi] Arch Linux haberleri kontrol ediliyor..."
     RSS_PUBDATE=$(curl -s "$RSS_FEED_URL" | grep -m 2 -o '<pubDate>.*</pubDate>' | tail -n 1 | sed -e 's/<[^>]*>//g')
     if [ -n "$RSS_PUBDATE" ]; then LATEST_NEWS_EPOCH=$(date -d "$RSS_PUBDATE" +%s 2>/dev/null || echo 0); else LATEST_NEWS_EPOCH=0; fi
 
     if [ "$LATEST_NEWS_EPOCH" -gt "$NEWS_ACK_EPOCH" ]; then
         if [ "$NEWS_RETRIES" -ge 3 ]; then
+            echo "[Hata] Haberler 3 kez onaylanmadı. Güvenlik gereği çıkılıyor."
             notify-send -a "Arch Updater" -u critical "Güncelleme İptal Edildi" "Haberler onaylanmadığı için sistem güvenliği gereği güncelleme iptal edildi."
             echo 0 > "$RETRY_COUNT_FILE"
             exit 0
@@ -306,17 +342,21 @@ if [ "$SKIP_UPDATES" -eq 0 ]; then
             BTN="Open News"; TITLE="⚠️ Critical Arch News Pending"
         fi
 
+        echo "[Uyarı] Okunmamış Arch haberi bulundu. Kullanıcıdan onay bekleniyor..."
         ACTION=$(notify-send -a "Arch Updater" -u critical -t 0 -A "open=$BTN" "$TITLE" "$MSG")
 
         if [ "$ACTION" = "open" ]; then
+            echo "[Bilgi] Kullanıcı haberi açtı."
             xdg-open "$NEWS_PAGE_URL"
             echo "$LATEST_NEWS_EPOCH" > "$NEWS_ACK_LOG"
             echo 1 > "$POST_UPDATE_FLAG"
             echo 0 > "$RETRY_COUNT_FILE"
         else
+            echo "[Bilgi] Kullanıcı haberi açmadı. Deneme sayısı artırılıyor."
             echo $((NEWS_RETRIES + 1)) > "$RETRY_COUNT_FILE"
         fi
 
+        echo "[Bilgi] Sonraki deneme için systemd timer ayarlanıyor..."
         systemd-run --user --on-active="2h" /bin/bash "$SCRIPT_PATH" --retry
         exit 0
     fi
@@ -339,23 +379,26 @@ if [ "$SKIP_UPDATES" -eq 0 ]; then
             START_MSG="Your safe weekly update day is here! The update has started in the background; please do not restart until completion."
         fi
     fi
-    notify-send -a "Arch Updater" -u normal "$START_TITLE" "$START_MSG"
+    notify-send -a "Arch Updater" -u critical -t 5000 "$START_TITLE" "$START_MSG"
 
     echo -e "\n=== UPDATE LOG: $(date) ===" > /tmp/arch_updater_topgrade.log
 
-    # Run Topgrade command and record its status
-    sudo topgrade -y >> /tmp/arch_updater_topgrade.log 2>&1
-    TOPGRADE_EXIT=$?
+    echo "[Bilgi] Topgrade başlatılıyor..."
+    topgrade -y 2>&1 | tee -a /tmp/arch_updater_topgrade.log > /dev/null
+    TOPGRADE_EXIT=${PIPESTATUS[0]}
+    echo "[Bilgi] Topgrade çıkış kodu: $TOPGRADE_EXIT"
 
     # --- BACKUP PROCESS (Last 7 Logs) ---
     LOG_BACKUP_DIR="$HOME/.cache/arch-updater/logs"
     mkdir -p "$LOG_BACKUP_DIR"
     TIMESTAMP=$(date +%Y%m%d_%H%M%S)
     cp "/tmp/arch_updater_topgrade.log" "$LOG_BACKUP_DIR/arch_updater_${TIMESTAMP}.log" 2>/dev/null
-    # Keep only the 7 most recent .log files, delete the rest
+
+    # shellcheck disable=SC2010
     ls -tp "$LOG_BACKUP_DIR"/arch_updater_*.log 2>/dev/null | grep -v '/$' | tail -n +8 | xargs -I {} rm -- "{}" 2>/dev/null
 
-    if [ $TOPGRADE_EXIT -eq 0 ]; then
+    if [ "$TOPGRADE_EXIT" -eq 0 ]; then
+        echo "[Bilgi] Güncelleme başarıyla tamamlandı."
         date +%s > "$LOG_FILE"
         JUST_UPDATED=1
 
@@ -372,6 +415,7 @@ if [ "$SKIP_UPDATES" -eq 0 ]; then
             rm -f "$POST_UPDATE_FLAG"
         fi
     else
+        echo "[Hata] Topgrade bir hata döndürdü. Detaylar /tmp/arch_updater_topgrade.log dosyasında."
         if [ "$LANG_CHECK" = "TR" ]; then
             E_TITLE="Güncelleme Başarısız!"
             E_MSG="Arka planda çalışırken bir hata oluştu. Lütfen /tmp/arch_updater_topgrade.log dosyasını inceleyin."
@@ -385,8 +429,9 @@ if [ "$SKIP_UPDATES" -eq 0 ]; then
 fi
 
 # ==========================================
-# 8. REBOOT CHECK (Advanced)
+# 9. REBOOT CHECK (Advanced)
 # ==========================================
+echo "[Bilgi] Yeniden başlatma gereksinimi kontrol ediliyor..."
 REBOOT_NEEDED=0
 if [ "$SKIP_UPDATES" -eq 0 ]; then
     CURRENT_KERNEL=$(uname -r)
@@ -397,26 +442,28 @@ if [ "$SKIP_UPDATES" -eq 0 ]; then
         NEW_LINES=$((PACMAN_LOG_AFTER - PACMAN_LOG_BEFORE))
 
         if [ "$NEW_LINES" -gt 0 ]; then
-            # Core Arch components that require a reboot without a separate prompt
             CRITICAL_PKGS="linux|linux-lts|linux-zen|linux-hardened|linux-firmware.*|.*-ucode|systemd.*|glibc|dbus|nvidia.*|mesa|wayland|sddm|gdm|lightdm"
-
-            # Scans only the log lines added (newly) since this script started running
             if tail -n "$NEW_LINES" "$PACMAN_LOG" | grep -iE "\[ALPM\] (upgraded|installed|removed) ($CRITICAL_PKGS) \(" > /dev/null 2>&1; then
+                echo "[Bilgi] Kritik paket güncellemesi tespit edildi."
                 REBOOT_NEEDED=1
             fi
         fi
     fi
 
-    # 2. SERVICE UPDATE CHECK (sudo added so it can read system-level daemons)
+    # 2. SERVICE UPDATE CHECK
     if command -v needrestart &> /dev/null; then
         (sudo needrestart -b 2>/dev/null | grep -iq "NEEDRESTART-SVC-") && REBOOT_NEEDED=1
     fi
 
-    # 3. KERNEL MODULE CHECK (Deletion of old kernel folder)
-    if [ ! -d "/usr/lib/modules/$CURRENT_KERNEL" ]; then REBOOT_NEEDED=1; fi
+    # 3. KERNEL MODULE CHECK
+    if [ ! -d "/usr/lib/modules/$CURRENT_KERNEL" ]; then
+        echo "[Bilgi] Eski kernel modülleri silinmiş. Reboot gerekiyor."
+        REBOOT_NEEDED=1
+    fi
 fi
 
 if [ "$REBOOT_NEEDED" -eq 1 ] || [ "$PENDING_REBOOT" -eq 1 ]; then
+    echo "[Bilgi] Sistemi yeniden başlatmak gerekiyor. Kullanıcıya soruluyor..."
     date +%s > "$REBOOT_LOG"
 
     if [ "$LANG_CHECK" = "TR" ]; then
@@ -432,15 +479,17 @@ if [ "$REBOOT_NEEDED" -eq 1 ] || [ "$PENDING_REBOOT" -eq 1 ]; then
     ACTION=$(notify-send -u critical -t 15000 -A "reboot=$BTN" "$TITLE" "$MSG")
 
     if [ "$ACTION" = "reboot" ]; then
-        # sudo is not required in the background; if there is an active loginctl session, systemctl works without issues.
+        echo "[Bilgi] Kullanıcı yeniden başlatmayı onayladı."
         systemctl reboot
         exit 0
     else
+        echo "[Bilgi] Kullanıcı yeniden başlatmayı erteledi. Hatırlatıcı kuruluyor..."
         systemd-run --user --on-active="1h" /bin/bash "$SCRIPT_PATH" --retry
     fi
 else
     # --- SUCCESSFUL UPDATE WITH NO REBOOT REQUIRED ---
     if [ "$JUST_UPDATED" -eq 1 ]; then
+        echo "[Bilgi] Yeniden başlatma gerektirmeyen başarılı güncelleme."
         if [ "$LANG_CHECK" = "TR" ]; then
             SUCCESS_TITLE="Güncelleme Başarılı"
             SUCCESS_MSG="Canlı (Live) aynalardan güncellemeler yapıldı. Yeniden başlatma zorunlu değil."
@@ -452,4 +501,5 @@ else
     fi
 fi
 
+echo "[Bilgi] Betik tamamen ve sorunsuz bitti. Çıkılıyor."
 exit 0
